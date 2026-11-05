@@ -1,0 +1,19 @@
+# Local Claude Code settings (may contain API tokens / secrets)
+.claude/settings.local.json
+
+# macOS
+.venv/
+__pycache__/
+.pytest_cache/
+.env
+credentials.json
+token.json
+*.als
+*.wav
+*.aif
+*.aiff
+*.mp3
+*.flac
+*.sqlite3
+*.db
+.DS_Store
