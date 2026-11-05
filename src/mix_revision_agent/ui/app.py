@@ -78,16 +78,6 @@ if "als_tmp_path" not in st.session_state:
 if "last_result" not in st.session_state:
     st.session_state.last_result = None
 
-# Initialize dropdown defaults in session state
-if "dd_track_name" not in st.session_state:
-    st.session_state.dd_track_name = None
-if "dd_property_name" not in st.session_state:
-    st.session_state.dd_property_name = "volume"
-if "dd_property_direction" not in st.session_state:
-    st.session_state.dd_property_direction = "increase"
-if "dd_property_value" not in st.session_state:
-    st.session_state.dd_property_value = 1.0
-
 # ---------------------------------------------------------------------------
 # Step 1: Upload .als file
 # ---------------------------------------------------------------------------
@@ -111,9 +101,6 @@ if uploaded_file is not None:
         try:
             track_names = extract_track_names(Path(tmp_als_path))
             st.session_state.track_names = track_names
-            # Reset track selection to first available track
-            if track_names:
-                st.session_state.dd_track_name = track_names[0]
         except Exception as exc:
             st.error(f"Failed to read .als file: {exc}")
             st.session_state.track_names = []
@@ -125,13 +112,13 @@ if uploaded_file is not None:
 if st.session_state.track_names:
     st.subheader("2. Build your revision request")
 
-    # Compute current values from session state (with fallbacks)
-    current_track = st.session_state.dd_track_name or st.session_state.track_names[0]
-    current_property = st.session_state.dd_property_name or "volume"
-    current_direction = st.session_state.dd_property_direction or "increase"
-    current_value = st.session_state.dd_property_value or 1.0
-
-    db_delta = current_value if current_direction == "increase" else -current_value
+    # Read widget values directly from session_state keys. Streamlit updates
+    # these before rerunning the script on any widget change, so the sentence
+    # below always reflects the latest dropdown selections.
+    current_track = st.session_state.get("sb_track_name") or st.session_state.track_names[0]
+    current_property = st.session_state.get("sb_property_name") or "volume"
+    current_direction = st.session_state.get("sb_property_direction") or "increase"
+    current_value = st.session_state.get("sb_property_value") or 1.0
 
     # Build the structured sentence with colored dynamic words
     sentence_html = (
@@ -161,8 +148,6 @@ if st.session_state.track_names:
         help="Select the track you want to modify.",
         key="sb_track_name",
     )
-    if track_name != st.session_state.dd_track_name:
-        st.session_state.dd_track_name = track_name
 
     property_name = st.selectbox(
         "Property",
@@ -171,8 +156,6 @@ if st.session_state.track_names:
         help="Which track property to modify. Currently only volume is supported.",
         key="sb_property_name",
     )
-    if property_name != st.session_state.dd_property_name:
-        st.session_state.dd_property_name = property_name
 
     property_direction = st.selectbox(
         "Direction",
@@ -181,8 +164,6 @@ if st.session_state.track_names:
         help="Whether to increase or decrease the property value.",
         key="sb_property_direction",
     )
-    if property_direction != st.session_state.dd_property_direction:
-        st.session_state.dd_property_direction = property_direction
 
     property_values = [round(1.0 + i * 0.1, 1) for i in range(int((6.0 - 1.0) / 0.1) + 1)]
     value_index = property_values.index(current_value) if current_value in property_values else 0
@@ -193,10 +174,8 @@ if st.session_state.track_names:
         help=f"Amount in dB ({min(property_values)} to {max(property_values)}).",
         key="sb_property_value",
     )
-    if property_value != st.session_state.dd_property_value:
-        st.session_state.dd_property_value = property_value
 
-    # Recompute db_delta from final widget values (after any changes)
+    # Recompute db_delta from final widget values
     db_delta = property_value if property_direction == "increase" else -property_value
 
     st.subheader("3. Apply revision")
@@ -260,10 +239,6 @@ if st.session_state.last_result is not None:
         st.session_state.last_result = None
         st.session_state.track_names = []
         st.session_state.als_tmp_path = None
-        st.session_state.dd_track_name = None
-        st.session_state.dd_property_name = "volume"
-        st.session_state.dd_property_direction = "increase"
-        st.session_state.dd_property_value = 1.0
         st.rerun()
 
 st.divider()
