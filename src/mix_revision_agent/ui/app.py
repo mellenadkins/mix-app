@@ -1,10 +1,11 @@
-"""Mix Revision Agent — Streamlit UI.
+"""Mix Revision Agent — Streamlit UI (revised MVP).
 
 A local desktop application that:
-1. Accepts mix-revision instructions via a text input field.
-2. Lets the user select an Ableton Live Set (.als) file via a file picker.
-3. Applies the track-volume change to the .als file in the background.
-4. Provides a download button for the modified .als file.
+1. Lets the user upload an Ableton Live Set (.als) file first.
+2. Extracts all track names from the .als session file.
+3. Displays dropdown menus to construct a volume edit request.
+4. Applies the track-volume change to the .als file in the background.
+5. Provides a download button for the modified .als file.
 
 Run with: streamlit run src/mix_revision_agent/ui/app.py
 """
@@ -14,7 +15,6 @@ from __future__ import annotations
 import logging
 import math
 import os
-import re
 import sys
 import tempfile
 import threading
@@ -31,6 +31,7 @@ from mix_revision_agent.ableton.session import (
     apply_volume_edit,
     clamp_db,
     linear_to_db,
+    load_session,
     SessionError,
     TrackNotFoundError,
     AmbiguousTrackError,
@@ -62,51 +63,37 @@ class RevisionResult:
 
 
 # ---------------------------------------------------------------------------
-# Text parsing
+# .als helpers
 # ---------------------------------------------------------------------------
 
-def parse_revision_text(text: str) -> RevisionRequest:
-    """Parse a plain-text revision request into a structured request.
+def extract_track_names(als_path: Path) -> list[str]:
+    """Extract all track names from an .als file.
 
-    Expected format: "Turn up the VOCALS by 3 dB" or similar.
-    Extracts track name and dB delta from free text.
-
-    This is intentionally simple — no LLM involved. Uses regex patterns
-    to extract the instrument name and numerical dB value.
+    Returns a sorted list of unique track names (UserName preferred,
+    EffectiveName fallback). Skips tracks with empty names.
     """
-    text = text.strip()
+    root = load_session(als_path)
+    names: set[str] = set()
 
-    # Pattern: [verb] [track name] by [number] dB
-    # Examples: "Turn up the VOCALS by 3 dB", "Lower DRUMS by -2 dB",
-    #           "Set BASS to 1 dB", "GUITAR +3 dB"
-    patterns = [
-        # "increase/decrease/turn up/turn down/lower/raise X by Y dB"
-        r'(?:turn\s+up|increase|raise|boost)\s+(?:the\s+)?(.+?)\s+by\s+([+-]?\d+(?:\.\d+)?)\s*dB',
-        # "decrease/lower X by Y dB" (negative)
-        r'(?:turn\s+down|decrease|lower|cut)\s+(?:the\s+)?(.+?)\s+by\s+([+-]?\d+(?:\.\d+)?)\s*dB',
-        # "set X to Y dB"
-        r'set\s+(?:the\s+)?(.+?)\s+to\s+([+-]?\d+(?:\.\d+)?)\s*dB',
-        # "X +Y dB" or "X -Y dB" or "X Y dB"
-        r'^(.+?)\s+([+-]?\d+(?:\.\d+)?)\s*dB$',
-    ]
+    for track in root.findall(".//Tracks/*"):
+        name_el = track.find("Name")
+        if name_el is None:
+            continue
 
-    track_name = None
-    volume_db = None
+        user_name_el = name_el.find("UserName")
+        if user_name_el is not None:
+            value = user_name_el.get("Value", "")
+            if value:
+                names.add(value)
+                continue
 
-    for pattern in patterns:
-        match = re.search(pattern, text, re.IGNORECASE)
-        if match:
-            track_name = match.group(1).strip()
-            volume_db = float(match.group(2))
-            break
+        effective_name_el = name_el.find("EffectiveName")
+        if effective_name_el is not None:
+            value = effective_name_el.get("Value", "")
+            if value:
+                names.add(value)
 
-    if track_name is None or volume_db is None:
-        raise ValueError(
-            "Could not parse revision request. "
-            "Expected format like: 'Turn up VOCALS by 3 dB' or 'GUITAR -2 dB'"
-        )
-
-    return RevisionRequest(track_name=track_name, volume_db=volume_db)
+    return sorted(names)
 
 
 # ---------------------------------------------------------------------------
@@ -195,10 +182,6 @@ st.set_page_config(
 )
 
 st.title("🎛️ Mix Revision Agent")
-st.markdown(
-    "Enter a mix-revision instruction, select an Ableton Live Set (.als) file, "
-    "and download the modified file."
-)
 
 # Initialize session state
 if "processor" not in st.session_state:
@@ -207,67 +190,109 @@ if "result_ready" not in st.session_state:
     st.session_state.result_ready = False
 if "processing" not in st.session_state:
     st.session_state.processing = False
+if "track_names" not in st.session_state:
+    st.session_state.track_names: list[str] = []
+if "als_tmp_path" not in st.session_state:
+    st.session_state.als_tmp_path: Optional[str] = None
 
 # ---------------------------------------------------------------------------
-# Input form
+# Step 1: Upload .als file
 # ---------------------------------------------------------------------------
 
-st.subheader("1. Enter revision instruction")
-revision_text = st.text_area(
-    "Mix revision instruction",
-    placeholder="e.g. 'Turn up the VOCALS by 3 dB' or 'GUITAR -2 dB'",
-    height=100,
-    help="Specify the instrument name and the dB change. "
-    "Example: 'Turn up the VOCALS by 3 dB'",
-)
-
-st.subheader("2. Select .als file")
+st.subheader("1. Upload .als file")
 uploaded_file = st.file_uploader(
     "Choose an Ableton Live Set (.als) file",
     type=["als"],
     help="Select the .als file to modify. The original file is never overwritten.",
 )
 
-# ---------------------------------------------------------------------------
-# Process button
-# ---------------------------------------------------------------------------
+if uploaded_file is not None:
+    # Save uploaded file to a temp location and extract track names
+    tmp_dir = tempfile.mkdtemp(prefix="mix_revision_")
+    tmp_als_path = os.path.join(tmp_dir, uploaded_file.name)
+    with open(tmp_als_path, "wb") as f:
+        f.write(uploaded_file.getbuffer())
 
-process_clicked = st.button("Apply Revision", type="primary", disabled=st.session_state.processing)
-
-if process_clicked:
-    if not revision_text.strip():
-        st.error("Please enter a revision instruction.")
-    elif uploaded_file is None:
-        st.error("Please select a .als file.")
-    else:
-        # Parse the revision text
+    # Store tmp path in session state (only if it changed)
+    if st.session_state.als_tmp_path != tmp_als_path:
+        st.session_state.als_tmp_path = tmp_als_path
         try:
-            request = parse_revision_text(revision_text)
-        except ValueError as exc:
-            st.error(str(exc))
-            st.stop()
+            track_names = extract_track_names(Path(tmp_als_path))
+            st.session_state.track_names = track_names
+            # Reset processing state when a new file is uploaded
+            st.session_state.processing = False
+            st.session_state.result_ready = False
+            st.session_state.processor = RevisionProcessor()
+        except Exception as exc:
+            st.error(f"Failed to read .als file: {exc}")
+            st.session_state.track_names = []
 
-        # Clamp the volume to safe range
-        clamped_db = clamp_db(request.volume_db)
-        if abs(clamped_db - request.volume_db) > 0.001:
-            st.warning(
-                f"Volume change clamped from {request.volume_db} dB to {clamped_db} dB "
-                f"(safe range: -70 to +6.02 dB)."
-            )
+# ---------------------------------------------------------------------------
+# Step 2: Build revision request via dropdowns
+# ---------------------------------------------------------------------------
 
-        # Save uploaded file to a temp location
-        tmp_dir = tempfile.mkdtemp(prefix="mix_revision_")
-        tmp_als_path = os.path.join(tmp_dir, uploaded_file.name)
-        with open(tmp_als_path, "wb") as f:
-            f.write(uploaded_file.getbuffer())
+if st.session_state.track_names:
+    st.subheader("2. Build your revision request")
 
-        # Start background processing
+    track_name = st.selectbox(
+        "Track name",
+        options=st.session_state.track_names,
+        help="Select the track you want to modify.",
+    )
+
+    property_name = st.selectbox(
+        "Property",
+        options=["volume"],
+        help="Which track property to modify. Currently only volume is supported.",
+    )
+
+    property_direction = st.selectbox(
+        "Direction",
+        options=["increase", "decrease"],
+        help="Whether to increase or decrease the property value.",
+    )
+
+    # Property values: 1.0 to 6.0 in 0.1 steps
+    property_values = [round(1.0 + i * 0.1, 1) for i in range(int((6.0 - 1.0) / 0.1) + 1)]
+    property_value = st.selectbox(
+        "Value (dB)",
+        options=property_values,
+        help=f"Amount in dB ({min(property_values)} to {max(property_values)}).",
+    )
+
+    # Build the request string
+    if property_direction == "increase":
+        db_delta = property_value
+    else:
+        db_delta = -property_value
+
+    request_string = (
+        f"I want to modify the {track_name} track. "
+        f"The {property_name} should {property_direction} by {property_value} dB."
+    )
+
+    st.markdown("**Your request:**")
+    st.info(request_string)
+
+    # ---------------------------------------------------------------------------
+    # Step 3: Apply Revision
+    # ---------------------------------------------------------------------------
+
+    st.subheader("3. Apply revision")
+
+    process_clicked = st.button(
+        "Apply Revision",
+        type="primary",
+        disabled=st.session_state.processing,
+    )
+
+    if process_clicked:
         st.session_state.processing = True
         st.session_state.result_ready = False
         st.session_state.processor.start(
-            als_path=tmp_als_path,
-            track_name=request.track_name,
-            volume_db_delta=clamped_db,
+            als_path=st.session_state.als_tmp_path,
+            track_name=track_name,
+            volume_db_delta=clamp_db(db_delta),
         )
         st.rerun()
 
@@ -276,9 +301,8 @@ if process_clicked:
 # ---------------------------------------------------------------------------
 
 if st.session_state.processing:
-    st.subheader("3. Processing...")
-    with st.spinner("Modifying .als file in the background..."):
-        # Check if processing is complete
+    st.subheader("Processing your request...")
+    with st.spinner(f"Applying volume change to the .als file..."):
         result = st.session_state.processor.get_result()
         if result is not None:
             st.session_state.processing = False
@@ -286,7 +310,6 @@ if st.session_state.processing:
             st.session_state.last_result = result
             st.rerun()
         else:
-            # Still running — rerun to keep the spinner alive
             st.rerun()
 
 # ---------------------------------------------------------------------------
@@ -296,15 +319,14 @@ if st.session_state.processing:
 if st.session_state.result_ready:
     result: RevisionResult = st.session_state.last_result
 
-    st.subheader("3. Result")
+    st.subheader("Result")
 
     if result.success:
         st.success(
-            f"✅ Track '{result.track_name}' volume changed "
-            f"from {result.old_db:.2f} dB to {result.new_db:.2f} dB."
+            f"✅ Volume change applied to '{result.track_name}': "
+            f"{result.old_db:.2f} dB → {result.new_db:.2f} dB."
         )
 
-        # Read the output file for download
         if result.output_path and result.output_path.exists():
             with open(result.output_path, "rb") as f:
                 file_bytes = f.read()
@@ -326,11 +348,12 @@ if st.session_state.result_ready:
     else:
         st.error(f"❌ {result.error}")
 
-    # Reset button
     if st.button("Start over"):
         st.session_state.processing = False
         st.session_state.result_ready = False
         st.session_state.last_result = None
+        st.session_state.track_names = []
+        st.session_state.als_tmp_path = None
         st.session_state.processor = RevisionProcessor()
         st.rerun()
 
@@ -343,6 +366,5 @@ st.markdown(
     "**Safety notes:**\n"
     "- Original .als files are never overwritten.\n"
     "- Volume changes are clamped to the safe range [-70 dB, +6.02 dB].\n"
-    "- Unknown or ambiguous track names are rejected.\n"
     "- All processing happens locally — no files are uploaded to external services."
 )
