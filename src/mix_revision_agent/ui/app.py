@@ -77,6 +77,8 @@ if "last_result" not in st.session_state:
     st.session_state.last_result = None
 if "revision_count" not in st.session_state:
     st.session_state.revision_count = 1
+if "revision_editable" not in st.session_state:
+    st.session_state.revision_editable = [True]  # first revision is editable
 
 
 def _key(idx: int, suffix: str) -> str:
@@ -104,6 +106,11 @@ if uploaded_file is not None:
         st.session_state.als_tmp_path = tmp_als_path
         st.session_state.last_result = None
         st.session_state.revision_count = 1
+        st.session_state.revision_editable = [True]  # Reset to single editable revision
+        # Clear all widget states to avoid stale data
+        for key in list(st.session_state.keys()):
+            if key.startswith("rev_"):
+                del st.session_state[key]
         try:
             track_names = extract_track_names(Path(tmp_als_path))
             st.session_state.track_names = track_names
@@ -119,7 +126,10 @@ if st.session_state.track_names:
     st.subheader("2. Build your revision request(s)")
 
     for i in range(st.session_state.revision_count):
-        st.markdown(f"### Revision {i + 1}")
+        # Determine revision title and editability
+        is_editable = st.session_state.revision_editable[i]
+        revision_label = f"Revision {i + 1}" + (" [Active]" if is_editable else " [Locked]")
+        st.markdown(f"### {revision_label}")
 
         # Read current values from widget keys (instant updates)
         current_track = st.session_state.get(_key(i, "track")) or st.session_state.track_names[0]
@@ -148,55 +158,90 @@ if st.session_state.track_names:
         col1, col2, col3, col4 = st.columns(4)
 
         with col1:
-            track_name = st.selectbox(
-                "Track name",
-                options=st.session_state.track_names,
-                index=st.session_state.track_names.index(current_track)
-                if current_track in st.session_state.track_names
-                else 0,
-                key=_key(i, "track"),
-            )
+            if is_editable:
+                track_name = st.selectbox(
+                    "Track name",
+                    options=st.session_state.track_names,
+                    index=st.session_state.track_names.index(current_track)
+                    if current_track in st.session_state.track_names
+                    else 0,
+                    key=_key(i, "track"),
+                )
+            else:
+                # Read-only display for locked revisions
+                st.text_input("Track name", value=current_track, disabled=True)
+                track_name = current_track
 
         with col2:
-            property_name = st.selectbox(
-                "Property",
-                options=["volume"],
-                index=0 if current_property == "volume" else 0,
-                key=_key(i, "property"),
-            )
+            if is_editable:
+                property_name = st.selectbox(
+                    "Property",
+                    options=["volume"],
+                    index=0 if current_property == "volume" else 0,
+                    key=_key(i, "property"),
+                )
+            else:
+                st.text_input("Property", value=current_property, disabled=True)
+                property_name = current_property
 
         with col3:
-            property_direction = st.selectbox(
-                "Direction",
-                options=["increase", "decrease"],
-                index=0 if current_direction == "increase" else 1,
-                key=_key(i, "direction"),
-            )
+            if is_editable:
+                property_direction = st.selectbox(
+                    "Direction",
+                    options=["increase", "decrease"],
+                    index=0 if current_direction == "increase" else 1,
+                    key=_key(i, "direction"),
+                )
+            else:
+                st.text_input("Direction", value=current_direction, disabled=True)
+                property_direction = current_direction
 
         with col4:
-            property_values = [round(1.0 + i2 * 0.1, 1) for i2 in range(int((6.0 - 1.0) / 0.1) + 1)]
-            value_index = property_values.index(current_value) if current_value in property_values else 0
-            property_value = st.selectbox(
-                "Value (dB)",
-                options=property_values,
-                index=value_index,
-                key=_key(i, "value"),
-            )
+            if is_editable:
+                property_values = [round(1.0 + i2 * 0.1, 1) for i2 in range(int((6.0 - 1.0) / 0.1) + 1)]
+                value_index = property_values.index(current_value) if current_value in property_values else 0
+                property_value = st.selectbox(
+                    "Value (dB)",
+                    options=property_values,
+                    index=value_index,
+                    key=_key(i, "value"),
+                )
+            else:
+                st.text_input("Value (dB)", value=f"{current_value}", disabled=True)
+                property_value = current_value
 
-        # Add button row: + and remove
-        col_add, col_remove = st.columns(2)
-        with col_add:
-            if st.button("+ Add another revision", key=f"add_{i}"):
-                st.session_state.revision_count += 1
+        # Delete button for locked revisions
+        if not is_editable and st.session_state.revision_count > 1:
+            if st.button("Remove this revision", key=f"remove_{i}"):
+                # Remove from both lists
+                st.session_state.revision_count -= 1
+                st.session_state.revision_editable.pop(i)
                 st.rerun()
 
-        with col_remove:
-            if st.session_state.revision_count > 1:
-                if st.button("Remove this revision", key=f"remove_{i}"):
-                    st.session_state.revision_count -= 1
-                    st.rerun()
+        st.divider()
 
         st.divider()
+
+    # Add a single "Add another revision" button after all revision blocks
+    # This allows users to add unlimited revisions
+    if st.session_state.revision_editable and st.session_state.revision_editable[-1]:
+        if st.button("+ Add another revision"):
+            # Add new revision to both lists
+            st.session_state.revision_count += 1
+            st.session_state.revision_editable.append(True)
+            # Reset the new revision to default values
+            # The new revision gets index revision_count-1 (since it was just added)
+            new_idx = st.session_state.revision_count - 1
+            # Set default widget keys for the new revision
+            # These will be used when rendering the new revision
+            st.session_state[_key(new_idx, "track")] = st.session_state.track_names[0]
+            st.session_state[_key(new_idx, "property")] = "volume"
+            st.session_state[_key(new_idx, "direction")] = "increase"
+            st.session_state[_key(new_idx, "value")] = 1.0
+            # Lock all previous revisions except the new one
+            for i in range(new_idx):
+                st.session_state.revision_editable[i] = False
+            st.rerun()
 
     st.subheader("3. Apply all revisions")
     process_clicked = st.button("Apply all revisions", type="primary")
@@ -266,6 +311,11 @@ if st.session_state.last_result is not None:
         st.session_state.track_names = []
         st.session_state.als_tmp_path = None
         st.session_state.revision_count = 1
+        st.session_state.revision_editable = [True]  # Reset to single editable revision
+        # Clear all widget states to avoid stale data
+        for key in list(st.session_state.keys()):
+            if key.startswith("rev_"):
+                del st.session_state[key]
         st.rerun()
 
 st.divider()
