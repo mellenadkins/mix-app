@@ -123,15 +123,15 @@ if st.session_state.track_names:
     # Build the structured sentence with colored dynamic words
     sentence_html = (
         "<div style=\"font-size: 26px; line-height: 1.6; margin: 12px 0;\">"
-        "<span style=\"color: #222222;\">I want to modify the </span>"
+        "<span style=\"color: #ffffff;\">I want to modify the </span>"
         f"<span style=\"color: #1f77b4; font-weight: bold;\">{current_track}</span>"
-        "<span style=\"color: #222222;\"> track. The </span>"
+        "<span style=\"color: #ffffff;\"> track. The </span>"
         f"<span style=\"color: #2ca02c; font-weight: bold;\">{current_property}</span>"
-        "<span style=\"color: #222222;\"> should </span>"
+        "<span style=\"color: #ffffff;\"> should </span>"
         f"<span style=\"color: #ff7f0e; font-weight: bold;\">{current_direction}</span>"
-        "<span style=\"color: #222222;\"> by </span>"
+        "<span style=\"color: #ffffff;\"> by </span>"
         f"<span style=\"color: #d62728; font-weight: bold;\">{current_value}</span>"
-        "<span style=\"color: #222222;\"> dB.</span>"
+        "<span style=\"color: #ffffff;\"> dB.</span>"
         "</div>"
     )
     st.markdown(sentence_html, unsafe_allow_html=True)
