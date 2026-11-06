@@ -3,8 +3,8 @@
 A local desktop application that:
 1. Lets the user upload an Ableton Live Set (.als) file first.
 2. Extracts all track names from the .als session file.
-3. Displays dropdown menus to construct a volume edit request.
-4. Applies the track-volume change to the .als file synchronously.
+3. Displays dropdown menus to construct one or more volume edit requests.
+4. Applies all track-volume changes to the .als file synchronously in one pass.
 5. Provides a download button for the modified .als file.
 
 Run with: streamlit run src/mix_revision_agent/ui/app.py
@@ -25,7 +25,7 @@ import streamlit as st
 sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "src"))
 
 from mix_revision_agent.ableton.session import (
-    apply_volume_edit,
+    apply_volume_edits,
     clamp_db,
     linear_to_db,
     load_session,
@@ -41,9 +41,7 @@ logger = logging.getLogger(__name__)
 class RevisionResult:
     success: bool
     output_path: Optional[Path] = None
-    track_name: Optional[str] = None
-    old_db: Optional[float] = None
-    new_db: Optional[float] = None
+    edits: list[tuple[str, float, float, float]] = None  # (track, direction, value, delta)
     error: Optional[str] = None
 
 
@@ -77,6 +75,13 @@ if "als_tmp_path" not in st.session_state:
     st.session_state.als_tmp_path = None
 if "last_result" not in st.session_state:
     st.session_state.last_result = None
+if "revision_count" not in st.session_state:
+    st.session_state.revision_count = 1
+
+
+def _key(idx: int, suffix: str) -> str:
+    return f"rev_{idx}_{suffix}"
+
 
 # ---------------------------------------------------------------------------
 # Step 1: Upload .als file
@@ -98,6 +103,7 @@ if uploaded_file is not None:
     if st.session_state.als_tmp_path != tmp_als_path:
         st.session_state.als_tmp_path = tmp_als_path
         st.session_state.last_result = None
+        st.session_state.revision_count = 1
         try:
             track_names = extract_track_names(Path(tmp_als_path))
             st.session_state.track_names = track_names
@@ -106,99 +112,121 @@ if uploaded_file is not None:
             st.session_state.track_names = []
 
 # ---------------------------------------------------------------------------
-# Step 2: Build your revision request
+# Step 2: Build revision request(s)
 # ---------------------------------------------------------------------------
 
 if st.session_state.track_names:
-    st.subheader("2. Build your revision request")
+    st.subheader("2. Build your revision request(s)")
 
-    # Read widget values directly from session_state keys. Streamlit updates
-    # these before rerunning the script on any widget change, so the sentence
-    # below always reflects the latest dropdown selections.
-    current_track = st.session_state.get("sb_track_name") or st.session_state.track_names[0]
-    current_property = st.session_state.get("sb_property_name") or "volume"
-    current_direction = st.session_state.get("sb_property_direction") or "increase"
-    current_value = st.session_state.get("sb_property_value") or 1.0
+    for i in range(st.session_state.revision_count):
+        st.markdown(f"### Revision {i + 1}")
 
-    # Build the structured sentence with colored dynamic words
-    sentence_html = (
-        "<div style=\"font-size: 26px; line-height: 1.6; margin: 12px 0;\">"
-        "<span style=\"color: #ffffff;\">I want to modify the </span>"
-        f"<span style=\"color: #1f77b4; font-weight: bold;\">{current_track}</span>"
-        "<span style=\"color: #ffffff;\"> track. The </span>"
-        f"<span style=\"color: #2ca02c; font-weight: bold;\">{current_property}</span>"
-        "<span style=\"color: #ffffff;\"> should </span>"
-        f"<span style=\"color: #ff7f0e; font-weight: bold;\">{current_direction}</span>"
-        "<span style=\"color: #ffffff;\"> by </span>"
-        f"<span style=\"color: #d62728; font-weight: bold;\">{current_value}</span>"
-        "<span style=\"color: #ffffff;\"> dB.</span>"
-        "</div>"
-    )
-    st.markdown(sentence_html, unsafe_allow_html=True)
+        # Read current values from widget keys (instant updates)
+        current_track = st.session_state.get(_key(i, "track")) or st.session_state.track_names[0]
+        current_property = st.session_state.get(_key(i, "property")) or "volume"
+        current_direction = st.session_state.get(_key(i, "direction")) or "increase"
+        current_value = st.session_state.get(_key(i, "value")) or 1.0
 
-    st.divider()
+        # Build the structured sentence with colored dynamic words
+        direction_word = current_direction.capitalize()
+        sentence_html = (
+            "<div style=\"font-size: 26px; line-height: 1.6; margin: 12px 0;\">"
+            f"<span style=\"color: #ff7f0e; font-weight: bold;\">{direction_word}</span>"
+            "<span style=\"color: #ffffff;\"> the </span>"
+            f"<span style=\"color: #2ca02c; font-weight: bold;\">{current_property}</span>"
+            "<span style=\"color: #ffffff;\"> of the </span>"
+            f"<span style=\"color: #1f77b4; font-weight: bold;\">{current_track}</span>"
+            "<span style=\"color: #ffffff;\"> track by </span>"
+            f"<span style=\"color: #d62728; font-weight: bold;\">{current_value}</span>"
+            "<span style=\"color: #ffffff;\"> dB.</span>"
+            "</div>"
+        )
+        st.markdown(sentence_html, unsafe_allow_html=True)
 
-    # Dropdowns below the sentence
-    track_name = st.selectbox(
-        "Track name",
-        options=st.session_state.track_names,
-        index=st.session_state.track_names.index(current_track)
-        if current_track in st.session_state.track_names
-        else 0,
-        help="Select the track you want to modify.",
-        key="sb_track_name",
-    )
+        st.divider()
 
-    property_name = st.selectbox(
-        "Property",
-        options=["volume"],
-        index=0 if current_property == "volume" else 0,
-        help="Which track property to modify. Currently only volume is supported.",
-        key="sb_property_name",
-    )
+        col1, col2, col3, col4 = st.columns(4)
 
-    property_direction = st.selectbox(
-        "Direction",
-        options=["increase", "decrease"],
-        index=0 if current_direction == "increase" else 1,
-        help="Whether to increase or decrease the property value.",
-        key="sb_property_direction",
-    )
+        with col1:
+            track_name = st.selectbox(
+                "Track name",
+                options=st.session_state.track_names,
+                index=st.session_state.track_names.index(current_track)
+                if current_track in st.session_state.track_names
+                else 0,
+                key=_key(i, "track"),
+            )
 
-    property_values = [round(1.0 + i * 0.1, 1) for i in range(int((6.0 - 1.0) / 0.1) + 1)]
-    value_index = property_values.index(current_value) if current_value in property_values else 0
-    property_value = st.selectbox(
-        "Value (dB)",
-        options=property_values,
-        index=value_index,
-        help=f"Amount in dB ({min(property_values)} to {max(property_values)}).",
-        key="sb_property_value",
-    )
+        with col2:
+            property_name = st.selectbox(
+                "Property",
+                options=["volume"],
+                index=0 if current_property == "volume" else 0,
+                key=_key(i, "property"),
+            )
 
-    # Recompute db_delta from final widget values
-    db_delta = property_value if property_direction == "increase" else -property_value
+        with col3:
+            property_direction = st.selectbox(
+                "Direction",
+                options=["increase", "decrease"],
+                index=0 if current_direction == "increase" else 1,
+                key=_key(i, "direction"),
+            )
 
-    st.subheader("3. Apply revision")
-    process_clicked = st.button("Apply Revision", type="primary")
+        with col4:
+            property_values = [round(1.0 + i2 * 0.1, 1) for i2 in range(int((6.0 - 1.0) / 0.1) + 1)]
+            value_index = property_values.index(current_value) if current_value in property_values else 0
+            property_value = st.selectbox(
+                "Value (dB)",
+                options=property_values,
+                index=value_index,
+                key=_key(i, "value"),
+            )
+
+        # Add button row: + and remove
+        col_add, col_remove = st.columns(2)
+        with col_add:
+            if st.button("+ Add another revision", key=f"add_{i}"):
+                st.session_state.revision_count += 1
+                st.rerun()
+
+        with col_remove:
+            if st.session_state.revision_count > 1:
+                if st.button("Remove this revision", key=f"remove_{i}"):
+                    st.session_state.revision_count -= 1
+                    st.rerun()
+
+        st.divider()
+
+    st.subheader("3. Apply all revisions")
+    process_clicked = st.button("Apply all revisions", type="primary")
 
     if process_clicked:
         als_path = st.session_state.als_tmp_path
         if not als_path:
             st.error("No .als file loaded. Please upload a file first.")
         else:
-            with st.spinner(f"Applying volume change to '{track_name}'..."):
+            # Collect all edits from widget keys
+            edits = []
+            old_new_pairs = []
+            for i in range(st.session_state.revision_count):
+                track_name = st.session_state.get(_key(i, "track")) or st.session_state.track_names[0]
+                direction = st.session_state.get(_key(i, "direction")) or "increase"
+                value = st.session_state.get(_key(i, "value")) or 1.0
+                delta = value if direction == "increase" else -value
+                edits.append((track_name, delta))
+                old_new_pairs.append((track_name, direction, value, delta))
+
+            with st.spinner(f"Applying {len(edits)} revision(s)..."):
                 try:
-                    plan = apply_volume_edit(
+                    plans = apply_volume_edits(
                         baseline_path=Path(als_path),
-                        track_name=track_name,
-                        volume_db_delta=clamp_db(db_delta),
+                        edits=edits,
                     )
                     result = RevisionResult(
                         success=True,
-                        output_path=plan.output_path,
-                        track_name=plan.track_name,
-                        old_db=linear_to_db(plan.old_linear_gain),
-                        new_db=plan.volume_db_target,
+                        output_path=plans[0].output_path,
+                        edits=old_new_pairs,
                     )
                     st.session_state.last_result = result
                 except (SessionError, TrackNotFoundError, AmbiguousTrackError, ValueError) as exc:
@@ -211,10 +239,8 @@ if st.session_state.last_result is not None:
     st.subheader("Result")
 
     if result.success:
-        st.success(
-            f"✅ Volume change applied to '{result.track_name}': "
-            f"{result.old_db:.2f} dB → {result.new_db:.2f} dB."
-        )
+        st.success(f"✅ Applied {len(result.edits)} revision(s).")
+
         if result.output_path and result.output_path.exists():
             with open(result.output_path, "rb") as f:
                 file_bytes = f.read()
@@ -239,6 +265,7 @@ if st.session_state.last_result is not None:
         st.session_state.last_result = None
         st.session_state.track_names = []
         st.session_state.als_tmp_path = None
+        st.session_state.revision_count = 1
         st.rerun()
 
 st.divider()
@@ -246,5 +273,6 @@ st.markdown(
     "**Safety notes:**\n"
     "- Original .als files are never overwritten.\n"
     "- Volume changes are clamped to the safe range [-70 dB, +6.02 dB].\n"
+    "- All revisions are applied in a single pass to one versioned file.\n"
     "- All processing happens locally — no files are uploaded to external services."
 )

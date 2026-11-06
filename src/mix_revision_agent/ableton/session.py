@@ -308,6 +308,79 @@ def apply_volume_edit(
     )
 
 
+def apply_volume_edits(
+    baseline_path: Path,
+    edits: list[tuple[str, float]],
+) -> list[EditPlan]:
+    """Apply multiple volume edits to a single .als file in one pass.
+
+    Each edit is a (track_name, volume_db_delta) tuple. All edits are applied
+    to the same XML document and saved as a single versioned .als file. The
+    original .als is never overwritten.
+
+    Steps:
+    1. Read raw XML once.
+    2. For each edit: find track by name, compute target linear gain,
+       clamp to [MIN_DB, MAX_DB], replace Manual Value in raw XML.
+    3. Write new versioned .als file once.
+    4. Return one EditPlan per edit (all sharing the same output_path).
+    """
+    xml_str, root = _read_raw_xml(baseline_path)
+
+    plans: list[EditPlan] = []
+
+    for track_name, volume_db_delta in edits:
+        track_index, track = _find_track_by_name(root, track_name)
+
+        manual_el = _get_manual_volume(track)
+        if manual_el is None:
+            raise SessionError(
+                f"No mixer volume found for track '{track_name}' in session"
+            )
+
+        old_value = manual_el.get("Value", "1")
+        old_linear = float(old_value)
+        old_db = linear_to_db(old_linear)
+
+        # Compute target: apply delta to current absolute dB, then clamp.
+        target_db = clamp_db(old_db + volume_db_delta)
+        new_linear = db_to_linear(target_db)
+        new_value = f"{new_linear:.10f}"
+
+        # Targeted string replacement on raw XML (mutates xml_str in place)
+        volume_idx, volume_end_idx, volume_block = _find_volume_block_in_raw(
+            xml_str, track_name
+        )
+        new_volume_block = _replace_manual_value_in_block(
+            volume_block, old_value, new_value
+        )
+        xml_str = xml_str[:volume_idx] + new_volume_block + xml_str[volume_end_idx:]
+
+        plans.append(
+            EditPlan(
+                baseline_path=baseline_path,
+                track_name=track_name,
+                track_index=track_index,
+                old_linear_gain=old_linear,
+                new_linear_gain=new_linear,
+                output_path=Path(""),  # set below after saving
+                volume_db_delta=volume_db_delta,
+                volume_db_target=target_db,
+            )
+        )
+
+    # Write once, after all edits are applied
+    revision = _next_revision_number(baseline_path)
+    output_path = _generate_output_path(baseline_path, revision)
+    _write_raw_xml(xml_str, output_path)
+
+    # Update output_path on all plans
+    for p in plans:
+        p.output_path = output_path
+
+    return plans
+
+
 def edit_session_from_plan(plan: EditPlan) -> Path:
     """Apply a pre-validated EditPlan to produce a new versioned .als.
 
