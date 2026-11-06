@@ -184,15 +184,15 @@ if st.session_state.track_names:
         track_class = "highlighted-track" if highlight_track else ""
 
         sentence_html = (
-            '<div style="font-size: 26px; line-height: 1.6; margin: 12px 0;">'
-            f'<span style="color: {direction_color}; font-weight: {direction_weight}; font-size: 28px;">{current_direction.capitalize()}</span>'
-            '<span style="color: #ffffff; font-size: 24px;"> the </span>'
-            f'<span style="color: {property_color}; font-weight: {property_weight}; font-size: 28px;">{current_property}</span>'
-            '<span style="color: #ffffff; font-size: 24px;"> of the </span>'
-            f'<span class="{track_class}" style="color: {track_color}; font-weight: {track_weight}; font-size: 30px;">{current_track}</span>'
-            '<span style="color: #ffffff; font-size: 24px;"> track by </span>'
-            f'<span style="color: {value_color}; font-weight: {value_weight}; font-size: 32px;">{current_value}</span>'
-            '<span style="color: #ffffff; font-size: 24px;"> dB.</span>'
+            '<div style="font-size: 26px; line-height: 1.6; margin: 12px 0; padding: 8px; background: rgba(255,255,255,0.05); border-radius: 6px;">'
+            f'<span style="color: {direction_color}; font-weight: {direction_weight}; font-size: 32px;">{current_direction.capitalize()}</span>'
+            '<span style="color: #ffffff; font-size: 28px; margin: 0 8px;"> the </span>'
+            f'<span style="color: {property_color}; font-weight: {property_weight}; font-size: 32px;">{current_property}</span>'
+            '<span style="color: #ffffff; font-size: 28px; margin: 0 8px;"> of the </span>'
+            f'<span class="{track_class}" style="color: {track_color}; font-weight: {track_weight}; font-size: 36px;">{current_track}</span>'
+            '<span style="color: #ffffff; font-size: 28px; margin: 0 8px;"> track by </span>'
+            f'<span style="color: {value_color}; font-weight: {value_weight}; font-size: 38px;">{current_value}</span>'
+            '<span style="color: #ffffff; font-size: 28px;"> dB.</span>'
             '</div>'
         )
         st.markdown(sentence_html, unsafe_allow_html=True)
