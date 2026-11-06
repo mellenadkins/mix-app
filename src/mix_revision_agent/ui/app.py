@@ -84,6 +84,31 @@ if "revision_editable" not in st.session_state:
 def _key(idx: int, suffix: str) -> str:
     return f"rev_{idx}_{suffix}"
 
+# Track which dropdown is most recently modified
+if "last_modified_dropdown" not in st.session_state:
+    st.session_state.last_modified_dropdown = None  # None means no dropdown has been modified yet
+
+# Add CSS for highlighted track
+st.markdown(
+    """
+    <style>
+    .highlighted-track {
+        border: 2px solid #ff7f0e;
+        border-radius: 4px;
+        padding: 2px 4px;
+        background-color: rgba(255, 127, 14, 0.1);
+        animation: pulse 2s infinite;
+    }
+    @keyframes pulse {
+        0% { background-color: rgba(255, 127, 14, 0.1); }
+        50% { background-color: rgba(255, 127, 14, 0.3); }
+        100% { background-color: rgba(255, 127, 14, 0.1); }
+    }
+    </style>
+    """,
+    unsafe_allow_html=True
+)
+
 
 # ---------------------------------------------------------------------------
 # Step 1: Upload .als file
@@ -138,18 +163,39 @@ if st.session_state.track_names:
         current_value = st.session_state.get(_key(i, "value")) or 1.0
 
         # Build the structured sentence with colored dynamic words
-        direction_word = current_direction.capitalize()
+        # Highlight the most recently modified dropdown
+        highlight_direction = st.session_state.last_modified_dropdown == _key(i, "direction")
+        highlight_property = st.session_state.last_modified_dropdown == _key(i, "property")
+        highlight_track = st.session_state.last_modified_dropdown == _key(i, "track")
+        highlight_value = st.session_state.last_modified_dropdown == _key(i, "value")
+
+        # Set colors based on which dropdown was last modified
+        direction_color = "#ff7f0e" if highlight_direction else "#ffffff"
+        direction_weight = "bold" if highlight_direction else "normal"
+
+        property_color = "#2ca02c" if highlight_property else "#ffffff"
+        property_weight = "bold" if highlight_property else "normal"
+
+        track_color = "#1f77b4" if highlight_track else "#ffffff"
+        track_weight = "bold" if highlight_track else "normal"
+
+        value_color = "#d62728" if highlight_value else "#ffffff"
+        value_weight = "bold" if highlight_value else "normal"
+
+        # Add highlight class to track name for special highlighting
+        track_class = "highlighted-track" if highlight_track else ""
+
         sentence_html = (
-            "<div style=\"font-size: 26px; line-height: 1.6; margin: 12px 0;\">"
-            f"<span style=\"color: #ff7f0e; font-weight: bold;\">{direction_word}</span>"
-            "<span style=\"color: #ffffff;\"> the </span>"
-            f"<span style=\"color: #2ca02c; font-weight: bold;\">{current_property}</span>"
-            "<span style=\"color: #ffffff;\"> of the </span>"
-            f"<span style=\"color: #1f77b4; font-weight: bold;\">{current_track}</span>"
-            "<span style=\"color: #ffffff;\"> track by </span>"
-            f"<span style=\"color: #d62728; font-weight: bold;\">{current_value}</span>"
-            "<span style=\"color: #ffffff;\"> dB.</span>"
-            "</div>"
+            '<div style="font-size: 26px; line-height: 1.6; margin: 12px 0;">'
+            f'<span style="color: {direction_color}; font-weight: {direction_weight}; font-size: 28px;">{current_direction.capitalize()}</span>'
+            '<span style="color: #ffffff; font-size: 24px;"> the </span>'
+            f'<span style="color: {property_color}; font-weight: {property_weight}; font-size: 28px;">{current_property}</span>'
+            '<span style="color: #ffffff; font-size: 24px;"> of the </span>'
+            f'<span class="{track_class}" style="color: {track_color}; font-weight: {track_weight}; font-size: 30px;">{current_track}</span>'
+            '<span style="color: #ffffff; font-size: 24px;"> track by </span>'
+            f'<span style="color: {value_color}; font-weight: {value_weight}; font-size: 32px;">{current_value}</span>'
+            '<span style="color: #ffffff; font-size: 24px;"> dB.</span>'
+            '</div>'
         )
         st.markdown(sentence_html, unsafe_allow_html=True)
 
@@ -179,6 +225,9 @@ if st.session_state.track_names:
                     options=["volume"],
                     index=0 if current_property == "volume" else 0,
                     key=_key(i, "property"),
+                    on_change=lambda: st.session_state.__setattr__(
+                        "last_modified_dropdown", _key(i, "property")
+                    ),
                 )
             else:
                 st.text_input("Property", value=current_property, disabled=True)
@@ -191,6 +240,9 @@ if st.session_state.track_names:
                     options=["increase", "decrease"],
                     index=0 if current_direction == "increase" else 1,
                     key=_key(i, "direction"),
+                    on_change=lambda: st.session_state.__setattr__(
+                        "last_modified_dropdown", _key(i, "direction")
+                    ),
                 )
             else:
                 st.text_input("Direction", value=current_direction, disabled=True)
@@ -205,6 +257,9 @@ if st.session_state.track_names:
                     options=property_values,
                     index=value_index,
                     key=_key(i, "value"),
+                    on_change=lambda: st.session_state.__setattr__(
+                        "last_modified_dropdown", _key(i, "value")
+                    ),
                 )
             else:
                 st.text_input("Value (dB)", value=f"{current_value}", disabled=True)
@@ -241,6 +296,8 @@ if st.session_state.track_names:
             # Lock all previous revisions except the new one
             for i in range(new_idx):
                 st.session_state.revision_editable[i] = False
+            # Reset last_modified_dropdown to avoid highlighting stale revisions
+            st.session_state.last_modified_dropdown = None
             st.rerun()
 
     st.subheader("3. Apply all revisions")
@@ -316,6 +373,8 @@ if st.session_state.last_result is not None:
         for key in list(st.session_state.keys()):
             if key.startswith("rev_"):
                 del st.session_state[key]
+        # Clear last_modified_dropdown to avoid stale highlighting
+        st.session_state.last_modified_dropdown = None
         st.rerun()
 
 st.divider()
