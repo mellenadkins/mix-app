@@ -97,12 +97,8 @@ st.markdown(
         border-radius: 4px;
         padding: 2px 4px;
         background-color: rgba(255, 127, 14, 0.1);
-        animation: pulse 2s infinite;
-    }
-    @keyframes pulse {
-        0% { background-color: rgba(255, 127, 14, 0.1); }
-        50% { background-color: rgba(255, 127, 14, 0.3); }
-        100% { background-color: rgba(255, 127, 14, 0.1); }
+        font-weight: bold;
+        font-size: 1.1em;
     }
     </style>
     """,
@@ -136,6 +132,8 @@ if uploaded_file is not None:
         for key in list(st.session_state.keys()):
             if key.startswith("rev_"):
                 del st.session_state[key]
+        # Reset last_modified_dropdown to avoid stale highlighting
+        st.session_state.last_modified_dropdown = None
         try:
             track_names = extract_track_names(Path(tmp_als_path))
             st.session_state.track_names = track_names
@@ -212,9 +210,11 @@ if st.session_state.track_names:
                     if current_track in st.session_state.track_names
                     else 0,
                     key=_key(i, "track"),
+                    on_change=lambda: st.session_state.__setattr__(
+                        "last_modified_dropdown", _key(i, "track")
+                    ) if st.session_state.track_names else None,
                 )
             else:
-                # Read-only display for locked revisions
                 st.text_input("Track name", value=current_track, disabled=True)
                 track_name = current_track
 
