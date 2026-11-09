@@ -107,6 +107,15 @@ if uploaded_file is not None:
             st.error(f"Failed to read .als file: {exc}")
             st.session_state.track_names = []
 
+        # Automatically create Revision 1 when a new file is uploaded
+        if not st.session_state.revisions and st.session_state.track_names:
+            st.session_state.revisions.append({
+                "track": st.session_state.track_names[0],
+                "property": "volume",
+                "direction": "increase",
+                "value": 1.0,
+            })
+
 # ---------------------------------------------------------------------------
 # Step 2: Build revision request(s)
 # ---------------------------------------------------------------------------
@@ -114,10 +123,10 @@ if uploaded_file is not None:
 if st.session_state.track_names:
     st.subheader("2. Build your revision request(s)")
 
-    # Add another revision button (displayed above existing revisions)
+    # "Add Revision" button (displayed above existing revisions)
     col_add1, col_add2 = st.columns([1, 4])
     with col_add1:
-        if st.button("+ Add another revision", key="add_revision"):
+        if st.button("+ Add Revision", key="add_revision"):
             st.session_state.revisions.append({
                 "track": st.session_state.track_names[0] if st.session_state.track_names else "",
                 "property": "volume",
@@ -126,7 +135,7 @@ if st.session_state.track_names:
             })
             st.rerun()
 
-    # Remove revision button (only if more than 1 revision)
+    # "Remove Last Revision" button (only if more than 1 revision)
     if len(st.session_state.revisions) > 1:
         with col_add2:
             if st.button("− Remove last revision", key="remove_revision"):
