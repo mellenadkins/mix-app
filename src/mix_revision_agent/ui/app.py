@@ -25,7 +25,7 @@ import streamlit as st
 sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "src"))
 
 from mix_revision_agent.ableton.session import (
-    apply_volume_edit,
+    apply_volume_edits,
     clamp_db,
     linear_to_db,
     load_session,
@@ -77,6 +77,8 @@ if "als_tmp_path" not in st.session_state:
     st.session_state.als_tmp_path = None
 if "last_result" not in st.session_state:
     st.session_state.last_result = None
+if "revisions" not in st.session_state:
+    st.session_state.revisions = []  # list of dicts: {track_name, direction, value}
 
 # ---------------------------------------------------------------------------
 # Step 1: Upload .als file
@@ -106,119 +108,181 @@ if uploaded_file is not None:
             st.session_state.track_names = []
 
 # ---------------------------------------------------------------------------
-# Step 2: Build your revision request
+# Step 2: Build revision request(s)
 # ---------------------------------------------------------------------------
 
 if st.session_state.track_names:
-    st.subheader("2. Build your revision request")
+    st.subheader("2. Build your revision request(s)")
 
-    # Read widget values directly from session_state keys. Streamlit updates
-    # these before rerunning the script on any widget change, so the sentence
-    # below always reflects the latest dropdown selections.
-    current_track = st.session_state.get("sb_track_name") or st.session_state.track_names[0]
-    current_property = st.session_state.get("sb_property_name") or "volume"
-    current_direction = st.session_state.get("sb_property_direction") or "increase"
-    current_value = st.session_state.get("sb_property_value") or 1.0
+    # Add another revision button (displayed above existing revisions)
+    col_add1, col_add2 = st.columns([1, 4])
+    with col_add1:
+        if st.button("+ Add another revision", key="add_revision"):
+            st.session_state.revisions.append({
+                "track": st.session_state.track_names[0] if st.session_state.track_names else "",
+                "property": "volume",
+                "direction": "increase",
+                "value": 1.0,
+            })
+            st.rerun()
 
-    # Build the structured sentence with colored dynamic words
-    sentence_html = (
-        "<div style=\"font-size: 26px; line-height: 1.6; margin: 12px 0;\">"
-        "<span style=\"color: #ffffff;\">I want to modify the </span>"
-        f"<span style=\"color: #1f77b4; font-weight: bold;\">{current_track}</span>"
-        "<span style=\"color: #ffffff;\"> track. The </span>"
-        f"<span style=\"color: #2ca02c; font-weight: bold;\">{current_property}</span>"
-        "<span style=\"color: #ffffff;\"> should </span>"
-        f"<span style=\"color: #ff7f0e; font-weight: bold;\">{current_direction}</span>"
-        "<span style=\"color: #ffffff;\"> by </span>"
-        f"<span style=\"color: #d62728; font-weight: bold;\">{current_value}</span>"
-        "<span style=\"color: #ffffff;\"> dB.</span>"
-        "</div>"
-    )
-    st.markdown(sentence_html, unsafe_allow_html=True)
+    # Remove revision button (only if more than 1 revision)
+    if len(st.session_state.revisions) > 1:
+        with col_add2:
+            if st.button("− Remove last revision", key="remove_revision"):
+                st.session_state.revisions.pop()
+                st.rerun()
 
-    st.divider()
+    # Render each revision request
+    for idx in range(len(st.session_state.revisions)):
+        rev = st.session_state.revisions[idx]
+        st.markdown(f"### Revision {idx + 1}")
 
-    # Dropdowns below the sentence
-    track_name = st.selectbox(
-        "Track name",
-        options=st.session_state.track_names,
-        index=st.session_state.track_names.index(current_track)
-        if current_track in st.session_state.track_names
-        else 0,
-        help="Select the track you want to modify.",
-        key="sb_track_name",
-    )
+        # Individual revision inputs
+        col_trk, col_prop, col_dir, col_val = st.columns(4)
 
-    property_name = st.selectbox(
-        "Property",
-        options=["volume"],
-        index=0 if current_property == "volume" else 0,
-        help="Which track property to modify. Currently only volume is supported.",
-        key="sb_property_name",
-    )
+        with col_trk:
+            track_name = st.selectbox(
+                "Track",
+                options=st.session_state.track_names,
+                index=st.session_state.track_names.index(rev["track"])
+                if rev["track"] in st.session_state.track_names
+                else 0,
+                key=f"rev_{idx}_track",
+            )
 
-    property_direction = st.selectbox(
-        "Direction",
-        options=["increase", "decrease"],
-        index=0 if current_direction == "increase" else 1,
-        help="Whether to increase or decrease the property value.",
-        key="sb_property_direction",
-    )
+        with col_prop:
+            property_name = st.selectbox(
+                "Property",
+                options=["volume"],
+                index=0,
+                key=f"rev_{idx}_property",
+            )
 
-    property_values = [round(1.0 + i * 0.1, 1) for i in range(int((6.0 - 1.0) / 0.1) + 1)]
-    value_index = property_values.index(current_value) if current_value in property_values else 0
-    property_value = st.selectbox(
-        "Value (dB)",
-        options=property_values,
-        index=value_index,
-        help=f"Amount in dB ({min(property_values)} to {max(property_values)}).",
-        key="sb_property_value",
-    )
+        with col_dir:
+            property_direction = st.selectbox(
+                "Direction",
+                options=["increase", "decrease"],
+                index=0 if rev["direction"] == "increase" else 1,
+                key=f"rev_{idx}_direction",
+            )
 
-    # Recompute db_delta from final widget values
-    db_delta = property_value if property_direction == "increase" else -property_value
+        with col_val:
+            property_values = [round(1.0 + i * 0.1, 1) for i in range(int((6.0 - 1.0) / 0.1) + 1)]
+            value_index = property_values.index(rev["value"]) if rev["value"] in property_values else 0
+            property_value = st.selectbox(
+                "Value (dB)",
+                options=property_values,
+                index=value_index,
+                key=f"rev_{idx}_value",
+            )
 
-    st.subheader("3. Apply revision")
-    process_clicked = st.button("Apply Revision", type="primary")
+        # Update session state with current widget values
+        rev["track"] = track_name
+        rev["property"] = property_name
+        rev["direction"] = property_direction
+        rev["value"] = property_value
+
+        # Build colored sentence for this revision
+        direction_color = "#ff7f0e" if rev["direction"] == "increase" else "#2ca02c"
+        property_color = "#2ca02c" if rev["property"] == "volume" else "#ffffff"
+        track_color = "#1f77b4"
+        value_color = "#d62728"
+        direction_word = rev["direction"].capitalize()
+
+        sentence_html = (
+            '<div style="font-size: 20px; line-height: 1.6; margin: 8px 0; '
+            'padding: 8px; background: rgba(255,255,255,0.05); border-radius: 6px;">'
+            f'<span style="color: #ffffff;">I want to modify the </span>'
+            f'<span style="color: {track_color}; font-weight: bold;">{rev["track"]}</span>'
+            f'<span style="color: #ffffff;"> track. The </span>'
+            f'<span style="color: {property_color}; font-weight: bold;">{rev["property"]}</span>'
+            f'<span style="color: #ffffff;"> should </span>'
+            f'<span style="color: {direction_color}; font-weight: bold;">{direction_word}</span>'
+            f'<span style="color: #ffffff;"> by </span>'
+            f'<span style="color: {value_color}; font-weight: bold;">{rev["value"]}</span>'
+            f'<span style="color: #ffffff;"> dB.</span>'
+            "</div>"
+        )
+        st.markdown(sentence_html, unsafe_allow_html=True)
+        st.divider()
+
+    # Compute all edits for processing
+    edits = []
+    for idx in range(len(st.session_state.revisions)):
+        rev = st.session_state.revisions[idx]
+        delta = rev["value"] if rev["direction"] == "increase" else -rev["value"]
+        edits.append((rev["track"], clamp_db(delta)))
+
+    st.subheader("3. Apply all revisions")
+    process_clicked = st.button("Apply All Revisions", type="primary")
 
     if process_clicked:
+        # Print requested changes to console
+        print(f"\n{'='*60}")
+        print("REVISION REQUESTS TO APPLY:")
+        print(f"{'='*60}")
+        for idx, (track, delta) in enumerate(edits, 1):
+            rev = st.session_state.revisions[idx - 1]
+            direction_word = rev["direction"].capitalize()
+            print(f"  {idx}. Track: {track}, {direction_word} {rev['value']} dB (delta: {delta:+.2f})")
+        print(f"{'='*60}\n")
+
         als_path = st.session_state.als_tmp_path
         if not als_path:
             st.error("No .als file loaded. Please upload a file first.")
+        elif not edits:
+            st.error("No revisions defined. Add at least one revision.")
         else:
-            with st.spinner(f"Applying volume change to '{track_name}'..."):
+            with st.spinner(f"Applying {len(edits)} revision(s)..."):
                 try:
-                    plan = apply_volume_edit(
+                    plans = apply_volume_edits(
                         baseline_path=Path(als_path),
-                        track_name=track_name,
-                        volume_db_delta=clamp_db(db_delta),
+                        edits=edits,
                     )
-                    result = RevisionResult(
-                        success=True,
-                        output_path=plan.output_path,
-                        track_name=plan.track_name,
-                        old_db=linear_to_db(plan.old_linear_gain),
-                        new_db=plan.volume_db_target,
-                    )
-                    st.session_state.last_result = result
+                    results = []
+                    for plan in plans:
+                        old_db = linear_to_db(plan.old_linear_gain)
+                        new_db = plan.volume_db_target
+                        results.append(RevisionResult(
+                            success=True,
+                            output_path=plan.output_path,
+                            track_name=plan.track_name,
+                            old_db=old_db,
+                            new_db=new_db,
+                        ))
+                    st.session_state.last_result = results
                 except (SessionError, TrackNotFoundError, AmbiguousTrackError, ValueError) as exc:
                     logger.exception("Revision processing failed")
-                    result = RevisionResult(success=False, error=str(exc))
-                    st.session_state.last_result = result
+                    st.session_state.last_result = None
+                    st.error(f"Revision processing failed: {exc}")
 
-if st.session_state.last_result is not None:
-    result: RevisionResult = st.session_state.last_result
-    st.subheader("Result")
+# Display results
+if st.session_state.last_result:
+    results = st.session_state.last_result
+    if isinstance(results, list):
+        st.subheader("Results")
 
-    if result.success:
-        st.success(
-            f"✅ Volume change applied to '{result.track_name}': "
-            f"{result.old_db:.2f} dB → {result.new_db:.2f} dB."
-        )
-        if result.output_path and result.output_path.exists():
-            with open(result.output_path, "rb") as f:
+        all_success = all(r.success for r in results)
+        if all_success:
+            st.success(f"✅ Applied {len(results)} revision(s).")
+            for r in results:
+                st.write(
+                    f"• {r.track_name}: {r.old_db:.2f} dB → {r.new_db:.2f} dB"
+                )
+        else:
+            st.error("Some revisions failed:")
+            for r in results:
+                if r.success:
+                    st.success(f"✅ {r.track_name}: {r.old_db:.2f} dB → {r.new_db:.2f} dB.")
+                else:
+                    st.error(f"❌ {r.track_name}: {r.error}")
+
+        if results and results[0].output_path and results[0].output_path.exists():
+            output_path = results[0].output_path
+            with open(output_path, "rb") as f:
                 file_bytes = f.read()
-            output_name = result.output_path.name
+            output_name = output_path.name
             st.download_button(
                 label="⬇️ Download modified .als file",
                 data=file_bytes,
@@ -228,12 +292,34 @@ if st.session_state.last_result is not None:
             )
             st.info(
                 "The original .als file is unchanged.\n"
-                "The modified file is a new versioned file."
+                "The modified file is a new versioned file with all revisions applied."
             )
-        else:
-            st.error("Output file not found.")
     else:
-        st.error(f"❌ {result.error}")
+        # Legacy single result (backward compatibility)
+        result = results
+        st.subheader("Result")
+        if result.success:
+            st.success(
+                f"✅ Volume change applied to '{result.track_name}': "
+                f"{result.old_db:.2f} dB → {result.new_db:.2f} dB."
+            )
+            if result.output_path and result.output_path.exists():
+                with open(result.output_path, "rb") as f:
+                    file_bytes = f.read()
+                output_name = result.output_path.name
+                st.download_button(
+                    label="⬇️ Download modified .als file",
+                    data=file_bytes,
+                    file_name=output_name,
+                    mime="application/octet-stream",
+                    type="primary",
+                )
+                st.info(
+                    "The original .als file is unchanged.\n"
+                    "The modified file is a new versioned file."
+                )
+        else:
+            st.error(f"❌ Revision failed: {result.error}")
 
     if st.button("Start over"):
         st.session_state.last_result = None
