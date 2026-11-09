@@ -78,7 +78,9 @@ if "als_tmp_path" not in st.session_state:
 if "last_result" not in st.session_state:
     st.session_state.last_result = None
 if "revisions" not in st.session_state:
-    st.session_state.revisions = []  # list of dicts: {track_name, direction, value}
+    st.session_state.revisions = []  # list of dicts: {track_name, direction, value, timestamp}
+if "song_length_seconds" not in st.session_state:
+    st.session_state.song_length_seconds = 300  # Default 5 minutes
 
 # ---------------------------------------------------------------------------
 # Step 1: Upload .als file
@@ -114,6 +116,7 @@ if uploaded_file is not None:
                 "property": "volume",
                 "direction": "increase",
                 "value": 1.0,
+                "timestamp": "00:00:00",
             })
 
 # ---------------------------------------------------------------------------
@@ -129,7 +132,7 @@ if st.session_state.track_names:
         st.markdown(f"### Revision {idx + 1}")
 
         # Individual revision inputs
-        col_trk, col_prop, col_dir, col_val = st.columns(4)
+        col_trk, col_prop, col_dir, col_val, col_ts = st.columns(5)
 
         with col_trk:
             track_name = st.selectbox(
@@ -167,11 +170,32 @@ if st.session_state.track_names:
                 key=f"rev_{idx}_value",
             )
 
+        with col_ts:
+            # Build timestamp dropdown options: 00:00:00 to song_length_seconds in 1-second increments
+            timestamp_options = []
+            for sec in range(st.session_state.song_length_seconds + 1):
+                mins = sec // 60
+                secs = sec % 60
+                timestamp_options.append(f"{mins:02d}:{secs:02d}:00")
+
+            current_ts = rev.get("timestamp", "00:00:00")
+            try:
+                ts_index = timestamp_options.index(current_ts)
+            except ValueError:
+                ts_index = 0
+            property_timestamp = st.selectbox(
+                "Timestamp",
+                options=timestamp_options,
+                index=ts_index,
+                key=f"rev_{idx}_timestamp",
+            )
+
         # Update session state with current widget values
         rev["track"] = track_name
         rev["property"] = property_name
         rev["direction"] = property_direction
         rev["value"] = property_value
+        rev["timestamp"] = property_timestamp
 
         # Build colored sentence for this revision
         direction_color = "#ff7f0e" if rev["direction"] == "increase" else "#2ca02c"
@@ -191,7 +215,8 @@ if st.session_state.track_names:
             f'<span style="color: {direction_color}; font-weight: bold;">{direction_word}</span>'
             f'<span style="color: #ffffff;"> by </span>'
             f'<span style="color: {value_color}; font-weight: bold;">{rev["value"]}</span>'
-            f'<span style="color: #ffffff;"> dB.</span>'
+            f'<span style="color: #ffffff;"> dB at </span>'
+            f'<span style="color: #ff7f0e; font-weight: bold;">{rev["timestamp"]}</span>'
             "</div>"
         )
         st.markdown(sentence_html, unsafe_allow_html=True)
@@ -204,6 +229,7 @@ if st.session_state.track_names:
             "property": "volume",
             "direction": "increase",
             "value": 1.0,
+            "timestamp": "00:00:00",
         })
         st.rerun()
 
@@ -218,7 +244,12 @@ if st.session_state.track_names:
     for idx in range(len(st.session_state.revisions)):
         rev = st.session_state.revisions[idx]
         delta = rev["value"] if rev["direction"] == "increase" else -rev["value"]
-        edits.append((rev["track"], clamp_db(delta)))
+        edits.append((
+            rev["track"],
+            rev["direction"],
+            rev["value"],
+            rev.get("timestamp", "00:00:00"),  # backward compatible for older revisions
+        ))
 
     st.subheader("3. Apply all revisions")
     process_clicked = st.button("Apply All Revisions", type="primary")
@@ -228,10 +259,9 @@ if st.session_state.track_names:
         print(f"\n{'='*60}")
         print("REVISION REQUESTS TO APPLY:")
         print(f"{'='*60}")
-        for idx, (track, delta) in enumerate(edits, 1):
-            rev = st.session_state.revisions[idx - 1]
+        for idx, rev in enumerate(st.session_state.revisions, 1):
             direction_word = rev["direction"].capitalize()
-            print(f"  {idx}. Track: {track}, {direction_word} {rev['value']} dB (delta: {delta:+.2f})")
+            print(f"  {idx}. Track: {rev['track']}, {direction_word} {rev['value']} dB at {rev['timestamp']}")
         print(f"{'='*60}\n")
 
         als_path = st.session_state.als_tmp_path

@@ -310,13 +310,19 @@ def apply_volume_edit(
 
 def apply_volume_edits(
     baseline_path: Path,
-    edits: list[tuple[str, float]],
+    edits: list[tuple[str, str, float, str]],
 ) -> list[EditPlan]:
     """Apply multiple volume edits to a single .als file in one pass.
 
-    Each edit is a (track_name, volume_db_delta) tuple. All edits are applied
-    to the same XML document and saved as a single versioned .als file. The
-    original .als is never overwritten.
+    Each edit is a (track_name, direction, value_db, timestamp_str) tuple.
+    All edits are applied to the same XML document and saved as a single
+    versioned .als file. The original .als is never overwritten.
+
+    If timestamp is "00:00:00" (0 seconds), the volume change is applied as a
+    static mixer volume change to the baseline gain.
+
+    If timestamp is non-zero, an automation envelope breakpoint is injected at
+    that timestamp.
 
     Steps:
     1. Read raw XML once.
@@ -329,45 +335,81 @@ def apply_volume_edits(
 
     plans: list[EditPlan] = []
 
-    for track_name, volume_db_delta in edits:
+    for track_name, direction, value_db, timestamp_str in edits:
         track_index, track = _find_track_by_name(root, track_name)
 
-        manual_el = _get_manual_volume(track)
-        if manual_el is None:
-            raise SessionError(
-                f"No mixer volume found for track '{track_name}' in session"
+        # Convert timestamp string "MM:SS:00" to seconds
+        timestamp_seconds = _parse_timestamp(timestamp_str)
+
+        if timestamp_seconds == 0:
+            # Static volume edit (change baseline gain)
+            manual_el = _get_manual_volume(track)
+            if manual_el is None:
+                raise SessionError(
+                    f"No mixer volume found for track '{track_name}' in session"
+                )
+
+            old_value = manual_el.get("Value", "1")
+            old_linear = float(old_value)
+            old_db = linear_to_db(old_linear)
+
+            # Compute target: apply delta to current absolute dB, then clamp.
+            delta = value_db if direction == "increase" else -value_db
+            target_db = clamp_db(old_db + delta)
+            new_linear = db_to_linear(target_db)
+            new_value = f"{new_linear:.10f}"
+
+            # Targeted string replacement on raw XML (mutates xml_str in place)
+            volume_idx, volume_end_idx, volume_block = _find_volume_block_in_raw(
+                xml_str, track_name
+            )
+            new_volume_block = _replace_manual_value_in_block(
+                volume_block, old_value, new_value
+            )
+            xml_str = xml_str[:volume_idx] + new_volume_block + xml_str[volume_end_idx:]
+
+            plans.append(
+                EditPlan(
+                    baseline_path=baseline_path,
+                    track_name=track_name,
+                    track_index=track_index,
+                    old_linear_gain=old_linear,
+                    new_linear_gain=new_linear,
+                    output_path=Path(""),  # set below after saving
+                    volume_db_delta=delta,
+                    volume_db_target=target_db,
+                )
+            )
+        else:
+            # Timestamped edit: add automation breakpoint
+            delta = value_db if direction == "increase" else -value_db
+            target_db = clamp_db(delta)
+            new_linear = db_to_linear(target_db)
+
+            # Convert seconds to beats (assume 120 BPM = 2 beats per second)
+            beat_position = timestamp_seconds * 2.0
+
+            # Find or create <Events> block for this track's volume automation
+            xml_str = _insert_automation_event(
+                xml_str, track_name, beat_position, new_linear
             )
 
-        old_value = manual_el.get("Value", "1")
-        old_linear = float(old_value)
-        old_db = linear_to_db(old_linear)
-
-        # Compute target: apply delta to current absolute dB, then clamp.
-        target_db = clamp_db(old_db + volume_db_delta)
-        new_linear = db_to_linear(target_db)
-        new_value = f"{new_linear:.10f}"
-
-        # Targeted string replacement on raw XML (mutates xml_str in place)
-        volume_idx, volume_end_idx, volume_block = _find_volume_block_in_raw(
-            xml_str, track_name
-        )
-        new_volume_block = _replace_manual_value_in_block(
-            volume_block, old_value, new_value
-        )
-        xml_str = xml_str[:volume_idx] + new_volume_block + xml_str[volume_end_idx:]
-
-        plans.append(
-            EditPlan(
-                baseline_path=baseline_path,
-                track_name=track_name,
-                track_index=track_index,
-                old_linear_gain=old_linear,
-                new_linear_gain=new_linear,
-                output_path=Path(""),  # set below after saving
-                volume_db_delta=volume_db_delta,
-                volume_db_target=target_db,
+            plans.append(
+                EditPlan(
+                    baseline_path=baseline_path,
+                    track_name=track_name,
+                    track_index=track_index,
+                    old_linear_gain=float(
+                        manual_el.get("Value", "1")
+                        if (manual_el := _get_manual_volume(track)) is not None
+                        else 1.0
+                    ),
+                    new_linear_gain=new_linear,
+                    output_path=Path(""),  # set below after saving
+                    volume_db_delta=delta,
+                    volume_db_target=target_db,
+                )
             )
-        )
 
     # Write once, after all edits are applied
     revision = _next_revision_number(baseline_path)
@@ -379,6 +421,67 @@ def apply_volume_edits(
         p.output_path = output_path
 
     return plans
+
+
+def _parse_timestamp(timestamp_str: str) -> int:
+    """Parse a timestamp string "MM:SS:00" into total seconds."""
+    try:
+        parts = timestamp_str.split(":")
+        if len(parts) == 3:
+            minutes, seconds, _ = int(parts[0]), int(parts[1]), int(parts[2])
+            return minutes * 60 + seconds
+        elif len(parts) == 2:
+            minutes, seconds = int(parts[0]), int(parts[1])
+            return minutes * 60 + seconds
+        else:
+            return int(parts[0])
+    except (ValueError, IndexError):
+        return 0
+
+
+def _insert_automation_event(
+    xml_str: str, track_name: str, beat_position: float, new_linear: float
+) -> str:
+    """Insert or update an automation breakpoint event for a track's volume.
+
+    Inserts a <FloatEvent Time="beat_position" Value="new_linear"/> into the
+    track's Volume AutomationTarget Events block.
+    """
+    root = ET.fromstring(xml_str)
+
+    # Find the track element
+    _, track_element = _find_track_by_name(root, track_name)
+
+    # Find the Mixer/Volume/AutomationTarget in this track
+    volume_el = track_element.find(".//DeviceChain/Mixer/Volume")
+    if volume_el is None:
+        raise SessionError(
+            f"No Mixer/Volume found for track '{track_name}'"
+        )
+
+    automation_target_el = volume_el.find("AutomationTarget")
+    if automation_target_el is None:
+        # Create AutomationTarget element
+        automation_target_el = ET.Element("AutomationTarget")
+        volume_el.append(automation_target_el)
+
+    # Find or create Events element
+    events_el = automation_target_el.find("Events")
+    if events_el is None:
+        events_el = ET.Element("Events")
+        automation_target_el.append(events_el)
+
+    # Create FloatEvent element
+    float_event_el = ET.Element("FloatEvent")
+    float_event_el.set("Time", f"{beat_position}")
+    float_event_el.set("Value", f"{new_linear:.10f}")
+
+    # Append the event
+    events_el.append(float_event_el)
+
+    # Convert back to string with XML declaration
+    xml_output = ET.tostring(root, encoding="unicode")
+    return f'<?xml version="1.0" encoding="UTF-8"?>\n{xml_output}'
 
 
 def edit_session_from_plan(plan: EditPlan) -> Path:
