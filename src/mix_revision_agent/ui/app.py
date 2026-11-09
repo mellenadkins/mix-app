@@ -123,25 +123,6 @@ if uploaded_file is not None:
 if st.session_state.track_names:
     st.subheader("2. Build your revision request(s)")
 
-    # "Add Revision" button (displayed above existing revisions)
-    col_add1, col_add2 = st.columns([1, 4])
-    with col_add1:
-        if st.button("+ Add Revision", key="add_revision"):
-            st.session_state.revisions.append({
-                "track": st.session_state.track_names[0] if st.session_state.track_names else "",
-                "property": "volume",
-                "direction": "increase",
-                "value": 1.0,
-            })
-            st.rerun()
-
-    # "Remove Last Revision" button (only if more than 1 revision)
-    if len(st.session_state.revisions) > 1:
-        with col_add2:
-            if st.button("− Remove last revision", key="remove_revision"):
-                st.session_state.revisions.pop()
-                st.rerun()
-
     # Render each revision request
     for idx in range(len(st.session_state.revisions)):
         rev = st.session_state.revisions[idx]
@@ -215,6 +196,22 @@ if st.session_state.track_names:
         )
         st.markdown(sentence_html, unsafe_allow_html=True)
         st.divider()
+
+    # "+ Add Revision" button (below all revisions)
+    if st.button("+ Add Revision", key="add_revision"):
+        st.session_state.revisions.append({
+            "track": st.session_state.track_names[0] if st.session_state.track_names else "",
+            "property": "volume",
+            "direction": "increase",
+            "value": 1.0,
+        })
+        st.rerun()
+
+    # "Remove Last Revision" button (only if more than 1 revision)
+    if len(st.session_state.revisions) > 1:
+        if st.button("− Remove Last Revision", key="remove_revision"):
+            st.session_state.revisions.pop()
+            st.rerun()
 
     # Compute all edits for processing
     edits = []
